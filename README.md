@@ -22,8 +22,7 @@ SPREADSHEET-ID=xxxx
 ## Key points
 - I have sent rows of one menu at once to the google sheet as the payload size is less here and google APIs allow upto 2 MB of data in one payload.
 - Google Sheets allows up to 300 writes per minute; batching ensures scalability for larger menus.
-- I tried exploring OCR + custom LLM pipeline. 
-- For this image preprocessing and postprocessing was required. These images can be seen in data and temp folder. 
+- I tried a lot to use OCR + custom LLM pipeline. For this image preprocessing and postprocessing was required. These images can be seen in data and temp folder. 
 - Ultimatley I went with using LLMs, as it felt much more simpler and accurate.
 - The check.ipynb and extract-menu.ipynb are like rough notebooks where I tried the approaches.
 - The excel sheet can be find [here](https://docs.google.com/spreadsheets/d/13BMAJ7pufqLy_wiDEn33anfJqMOh0vOt9_K2qWygneI/edit?usp=sharing).
