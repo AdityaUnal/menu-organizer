@@ -1,0 +1,13 @@
+pytesseract
+opencv-python
+matplotlib
+pandas
+google-genai
+dotenv
+requests
+lxml
+python-dotenv
+google-api-python-client
+google-auth
+google-auth-httplib2
+google-auth-oauthlib
