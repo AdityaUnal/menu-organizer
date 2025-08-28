@@ -33,7 +33,7 @@ class UploadMenu:
     def __init__(self,FilePath):
         self.FilePath = FilePath
         pass
-    def extractImage(self,max_retries = 3):
+    def extract_menu_image(self,max_retries = 3):
         
         prompt = '''
         You are an expert at extracting and structuring data from images of restaurant menus. I will provide you with images of a menu, and you must return the data in a structured JSON format.
@@ -110,7 +110,95 @@ class UploadMenu:
         self.data = ""
         return 500
 
+    def extract_menu_json(self):
+        try:
+            with open(self.FilePath, "r", encoding="utf-8") as f:
+                raw_data = json.load(f)
 
+            # Re-shape into the same structure extractImage() would return
+            # so flatten_menu() works without changes
+            restaurant_name = raw_data["restaurants"][0]["details"].get("restaurantname")
+            area_id = raw_data["areas"][0].get("areaid")
+            area_name = raw_data["areas"][0].get("displayname")
+
+
+            categories = []
+            for c in raw_data.get("categories", []):
+                items = [i for i in raw_data.get("items", []) if i["item_categoryid"] == c["categoryid"]]
+
+                cat_obj = {
+                    "id": c["categoryid"],
+                    "name": c["categoryname"],
+                    "image_url": c.get("category_image_url"),
+                    "availability": c.get("active") == "1",
+                    "rank": c.get("categoryrank"),
+                    "items": []
+                }
+
+                for i in items:
+                    item_obj = {
+                        "id": i.get("itemid"),
+                        "name": i.get("itemname"),
+                        "description": i.get("itemdescription"),
+                        "price": i.get("price"),
+                        "rank": i.get("itemrank"),
+                        "image_url": i.get("item_image_url"),
+                        "stock_status": "In Stock" if i.get("instock") == "2" else "Out of Stock",
+                    }
+
+                    # variations
+                    if i.get("variation"):
+                        for v in i["variation"]:
+                            var_obj = {
+                                "variation_item_id": v.get("id"),
+                                "variation_id": v.get("variationid"),
+                                "variation_name": v.get("name"),
+                                "variation_price": v.get("price")
+                            }
+                            item_obj.update(var_obj)
+
+                            # addons inside variations
+                            if v.get("addon"):
+                                addon = v["addon"][0]
+                                addon_obj = {
+                                    "addon_group_id": addon.get("addon_group_id"),
+                                    "addon_item_selection": addon.get("addon_item_selection"),
+                                    "addon_item_selection_min": addon.get("addon_item_selection_min"),
+                                    "addon_item_selection_max": addon.get("addon_item_selection_max")
+                                }
+                                item_obj.update(addon_obj)
+
+                    # addons at item level
+                    if i.get("addon"):
+                        addon = i["addon"][0]
+                        addon_obj = {
+                            "addon_group_id": addon.get("addon_group_id"),
+                            "addon_item_selection": addon.get("addon_item_selection"),
+                            "addon_item_selection_min": addon.get("addon_item_selection_min"),
+                            "addon_item_selection_max": addon.get("addon_item_selection_max")
+                        }
+                        item_obj.update(addon_obj)
+
+                    cat_obj["items"].append(item_obj)
+
+                categories.append(cat_obj)
+
+            final_json = {
+                "restaurant_name": restaurant_name,
+                "area_id": area_id,
+                "area_name": area_name,
+                "categories": categories
+            }
+
+            # Store in same place as extractImage
+            self.data = json.dumps(final_json, indent=2)
+            return 200
+
+        except Exception as e:
+            print(f"[extract_menu_json] Failed: {e}")
+            self.data = ""
+            return 500
+        
     def flatten_menu(self):
         if not self.data:
             print("[flatten_menu] No data to flatten.")
@@ -123,19 +211,19 @@ class UploadMenu:
             return []
 
         rows = []
-        restaurant_name = json_data.get("restaurant_name", "Not Present")
-        area_id = json_data.get("area_id", "Not Present")
-        area_name = json_data.get("area_name", "Not Present")
+        restaurant_name = json_data.get("restaurant_name", "")
+        area_id = json_data.get("area_id", "")
+        area_name = json_data.get("area_name", "")
 
         for category in json_data.get("categories", []):
-            category_id = category.get("id", "Not Present")
-            category_name = category.get("name", "Not Present")
-            category_image_url = category.get("image_url", "Not Present")
-            category_rank = category.get("rank", "Not Present")
-            category_availability = category.get("availability", "Not Present")
+            category_id = category.get("id", "")
+            category_name = category.get("name", "")
+            category_image_url = category.get("image_url", "")
+            category_rank = category.get("rank", "")
+            category_availability = category.get("availability", "")
 
             if not category.get("items"):
-                continue  # Skip empty categories
+                continue
 
             for item in category.get("items", []):
                 row = [
@@ -147,34 +235,27 @@ class UploadMenu:
                     category_image_url,
                     category_availability,
                     category_rank,
-                    item.get("id", "Not Present"),
-                    item.get("name", "Not Present"),
-                    item.get("description", "Not Present"),
-                    item.get("price", "Not Present"),
-                    item.get("rank", "Not Present"),
+                    item.get("id", ""),
+                    item.get("name", ""),
+                    item.get("description", ""),
+                    item.get("price", ""),
+                    item.get("rank", ""),
                     category_id,
-                    item.get("image_url", "Not Present"),
-                    item.get("stock_status", "In Stock"),
+                    item.get("image_url", ""),
+                    item.get("stock_status", ""),
+                    item.get("variation_item_id", ""),
+                    item.get("variation_id", ""),
+                    item.get("variation_name", ""),
+                    item.get("variation_price", ""),
+                    item.get("addon_name", ""),
+                    item.get("addon_item_selection", ""),
+                    item.get("addon_item_selection_min", ""),
+                    item.get("addon_item_selection_max", ""),
+                    item.get("addon_price", ""),
+                    item.get("addon_id", ""),
+                    item.get("addon_group_id", ""),
+                    item.get("addon_group_name", "")
                 ]
-
-                # Optional fields
-                optional_fields = [
-                    "variation_item_id",
-                    "variation_id",
-                    "variation_name",
-                    "variation_price",
-                    "addon_name",
-                    "addon_item_selection",
-                    "addon_item_selection_min",
-                    "addon_item_selection_max",
-                    "addon_price",
-                    "addon_id",
-                    "addon_group_id",
-                    "addon_group_name",
-                ]
-                for field in optional_fields:
-                    row.append(item.get(field, "Not Present"))
-
                 rows.append(row)
 
         return rows
@@ -236,7 +317,7 @@ def main():
     for i in range(2):
         print(i)
         obj = UploadMenu(f'data\\task_menu_{i+1}.png')
-        if obj.extractImage() == 200:
+        if obj.extract_menu_image() == 200:
             print(f"task_menu_{i+1}.png extracted successfully!")
         else:
             print(f"Failed to extract menu. Status code: {status}")
@@ -246,6 +327,17 @@ def main():
             print(f"task_menu_{i+1}.png appended successfully!")
         else:
             print(f"Failed to append menu. Status code: {status}")
+    json_obj = UploadMenu('data\\data_reference.json')
+    if json_obj.extract_menu_json() == 200:
+        print(f"json object extracted successfully!")  # preview first 200 chars
+
+        status = json_obj.append_to_sheets()
+        if status == 200:
+            print(f"json appended successfully!")
+        else:
+            print(f"Failed to append menu. Status code: {status}")
+    else:
+        print(f"Failed to extract menu. Status code: {status}")
 
 if __name__=="__main__":
     main()
