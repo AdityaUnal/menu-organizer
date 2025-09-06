@@ -8,7 +8,6 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import json
-
 load_dotenv()
 
 # === CONFIG ===
@@ -29,56 +28,100 @@ service = build("sheets", "v4", credentials=credentials)
 
 class UploadMenu:
     FilePath:str
-    data:str
     def __init__(self,FilePath):
         self.FilePath = FilePath
         pass
-    def extract_menu_image(self,max_retries = 3):
+    def extractImage(self, category_name,category_id ,max_retries = 3):
         
-        prompt = '''
-        You are an expert at extracting and structuring data from images of restaurant menus. I will provide you with images of a menu, and you must return the data in a structured JSON format.
+        prompt = f'''
+        You are an expert at extracting and structuring data from images of restaurant menus.
 
-        Here are the specific details and constraints for the JSON output:
+        TASK
+        - From the provided menu images, extract ONLY the items that belong to the category named: "{category_name}".
+        - If the menu uses a near-synonym or plural/singular variant of the category (e.g., "Burger" vs "Burgers"), treat it as the same category.
+        - Do NOT invent items. If none match, return an empty items array.
 
-        - **Restaurant Details:**
-        - `restaurant_name`: Extract the name of the restaurant. If not explicitly mentioned, leave it.
-        - `area_id`: A placeholder for an area ID (e.g., "123"). If not explicitly mentioned, leave it.
-        - `area_name`: A placeholder for an area name (e.g., "Central City"). If not explicitly mentioned, leave it.
+        OUTPUT FORMAT
+        Return a single JSON object with this shape, with the item_category_id have shared (and no extra text):
 
-        - **Menu Categories:**
-        - `categories`: An array of objects. Each object should represent a menu category.
-            - `id`: A unique, numerical ID for each category (e.g., 1, 2, 3).
-            - `name`: The name of the category (e.g., "Special Calzone Menu", "Bao", "Dessert").
-            - `image_url`: A placeholder for an image URL.
-            - `availability`: A boolean value (`true` or `false`). Assume all items are available unless specified otherwise.
-            - `rank`: An integer to determine the display order. Use 1, 2, 3, etc. based on the order in the image.
+        {{
+        "items": [
+            {{
+            "itemid": "",                       // leave empty for new items
+            "itemallowvariation": "0"|"1",      // "1" if variations are present, else "0"
+            "itemname": "<string>",
+            "itemrank": "<integer as string>",  // 1-based order; read top-to-bottom, left-to-right within the category
+            "item_categoryid": "{category_id}", // leave "" if unknown
+            "price": "<numeric as string>",     // e.g., "140"; strip currency symbols and punctuation
+            "active": "1",                      // default "1"
+            "item_favorite": "0",               // default "0"
+            "itemallowaddon": "0"|"1",          // "1" if add-ons are present, else "0"
+            "itemaddonbasedon": "0",            // default "0" (add-ons not tied to variation)
+            "instock": "2",                     // default "2" (in stock); use "0" if clearly sold out
+            "ignore_taxes": "0",                // default "0"
+            "ignore_discounts": "0",            // default "0"
+            "days": "-1",                       // default "-1"
+            "item_attributeid": "",             // unknown => empty string
+            "itemdescription": "<string>",      // concise description; join bullet points with ", "
+            "minimumpreparationtime": "",       // unknown => empty string
+            "item_image_url": "",               // placeholder
+            "variation": [
+                // present only when itemallowvariation == "1"
+                {{ "name": "<string>", "price": "<numeric as string>" }}
+            ],
+            "addon": [
+                // present only when itemallowaddon == "1"
+                {{
+                "addon_group_id": "",                 // leave empty if unknown
+                "addon_item_selection": "S"|"M",      // "S" = single choice; "M" = multiple allowed
+                "addon_item_selection_min": "<int as string>",
+                "addon_item_selection_max": "<int as string>"
+                }}
+            ],
+            "item_tax": ""                     // do not invent tax IDs; leave empty if unknown
+            }}
+        ]
+        }}
 
-        - **Menu Items:**
-        - `items`: An array of objects within each category. Each object should represent a menu item.
-            - `name`: The name of the dish (e.g., "Three Cheese Caprese").
-            - `description`: The description of the dish, including ingredients (e.g., "Mozzarella+Cheddar+Cream Cheese +Tomato+Basil+Balsamic Drizzle").
-            - `price`: The numerical price of the item.
-            - `rank`: An integer to determine the display order within the category.
-            - `image_url`: A placeholder for an image URL.
-            - `stock_status`: A string. Assume "In Stock" unless a clear indication of being out of stock is present (e.g., a "sold out" icon).
+        EXTRACTION RULES
+        1) CATEGORY SCOPING
+        - Only include items visually under the heading that matches "{category_name}" or a close lexical variant.
+        - If headings are ambiguous, prefer the nearest visible header above the items.
 
-        - **Customizations:**
-        - `customizations`: An array of objects. This should only be used for items with add-ons or variations.
-            - `group_id`: A unique ID for the customization group.
-            - `group_name`: The name of the group (e.g., "Add On").
-            - `min_selection`: The minimum number of selections allowed.
-            - `max_selection`: The maximum number of selections allowed.
-            - `variations`: An array of objects for each customization option.
-            - `name`: The name of the variation (e.g., "Gochujang Chicken").
-            - `price`: The price of the variation.
+        2) PRICE PARSING
+        - Normalize prices to numbers-as-strings (e.g., "₹140/-" → "140").
+        - If an item shows multiple sizes/variants with different prices (e.g., "Half 140 / Full 220"):
+            • Prefer "variation" entries with name, price and set "itemallowvariation" = "1".
+            • If the menu clearly lists the variants as separate named items, create separate items instead.
+        - If both a base price and variations exist, set the base price in "price" and also include variations.
 
-        **Important Instructions:**
-        - Carefully analyze the menu images to extract all relevant data.
-        - Ensure the JSON is properly formatted with correct syntax (commas, brackets, etc.).
-        - Use placeholders for `image_url`, `restaurant_name`, `area_id`, and `area_name` as you will not be able to generate these from the image.
-        - Pay close attention to items with multiple prices or add-ons and structure them correctly. For items like the "Mexican Style" Calzone, which has two prices, create two separate item entries. The first entry should have the first price, and the second should have the second price with a note in the description (e.g., "Paneer or Chicken"). Similarly, for the "Korean Garlic Buns," create a customization group for the "Add On" options.
+        3) RANKING
+        - "itemrank" starts at "1" and increments by reading order within the category (top→bottom, left→right).
 
-        Return only the final JSON object. Do not include any additional text, explanations, or conversational fillers in your response.'''
+        4) ADD-ONS / CUSTOMIZATIONS
+        - When the menu offers optional extras (e.g., “Add Cheese +30”, “Choose any 2 sauces”):
+            • Set "itemallowaddon" = "1".
+            • Use "addon_item_selection" = "S" if the text implies “choose 1”; use "M" if “choose any”/“choose up to N”.
+            • Set min/max from the text; if unspecified, use min "0" and max "1" for S, or a reasonable observed max for M.
+            • Do not invent "addon_group_id"; leave it empty if unknown.
+        - Do not put add-ons into "variation". Variations are mutually exclusive forms of the item; add-ons are optional extras.
+
+        5) STOCK
+        - Default "instock" = "2".
+        - If the item or its label clearly indicates unavailability (e.g., “Sold Out”, crossed-out), set "instock" = "0" and keep "active" = "1".
+
+        6) TEXT CLEANUP
+        - Preserve exact item names when possible; remove obvious OCR artifacts.
+        - "itemdescription": concise, readable sentence/phrase. Include notable ingredients or style cues from the image.
+
+        7) SAFETY & HALLUCINATION
+        - Do NOT guess tax IDs, attribute IDs, prep time, or group IDs; leave those fields empty if not visible.
+        - Do NOT add categories or items not present in the image.
+        - Do NOT add decorative sections, marketing blurbs, or explanations (e.g., “What’s a Calzone”). Only extract actual menu items under category headings.
+
+        RETURN FORMAT
+        - Return only the final JSON object as specified above. No prose, no Markdown, no explanations.
+    '''
 
         uploaded_file = client.files.upload(file = self.FilePath)
         attempt = 0
@@ -90,15 +133,11 @@ class UploadMenu:
                     contents=[prompt, uploaded_file]
                 )
                 
-                lines = response.text.splitlines()
+                new_items = response.text
                 # Strip triple backticks if present
-                if lines and lines[0].strip().startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].strip().startswith("```"):
-                    lines = lines[:-1]
+                new_items = new_items.strip().removeprefix("```json").removesuffix("```").strip()
 
-                self.data = "\n".join(lines)
-                return 200
+                return new_items
 
             except Exception as e:
                 wait_time = 2 ** attempt  # exponential backoff: 1, 2, 4...
@@ -107,237 +146,212 @@ class UploadMenu:
                 attempt += 1
 
         print("[extractImage] Max retries reached, giving up.")
-        self.data = ""
-        return 500
 
-    def extract_menu_json(self):
-        try:
-            with open(self.FilePath, "r", encoding="utf-8") as f:
-                raw_data = json.load(f)
+        return ""
 
-            # Re-shape into the same structure extractImage() would return
-            # so flatten_menu() works without changes
-            restaurant_name = raw_data["restaurants"][0]["details"].get("restaurantname")
-            area_id = raw_data["areas"][0].get("areaid")
-            area_name = raw_data["areas"][0].get("displayname")
-
-
-            categories = []
-            for c in raw_data.get("categories", []):
-                items = [i for i in raw_data.get("items", []) if i["item_categoryid"] == c["categoryid"]]
-
-                cat_obj = {
-                    "id": c["categoryid"],
-                    "name": c["categoryname"],
-                    "image_url": c.get("category_image_url"),
-                    "availability": c.get("active") == "1",
-                    "rank": c.get("categoryrank"),
-                    "items": []
-                }
-
-                for i in items:
-                    item_obj = {
-                        "id": i.get("itemid"),
-                        "name": i.get("itemname"),
-                        "description": i.get("itemdescription"),
-                        "price": i.get("price"),
-                        "rank": i.get("itemrank"),
-                        "image_url": i.get("item_image_url"),
-                        "stock_status": "In Stock" if i.get("instock") == "2" else "Out of Stock",
-                    }
-
-                    # variations
-                    if i.get("variation"):
-                        for v in i["variation"]:
-                            var_obj = {
-                                "variation_item_id": v.get("id"),
-                                "variation_id": v.get("variationid"),
-                                "variation_name": v.get("name"),
-                                "variation_price": v.get("price")
-                            }
-                            item_obj.update(var_obj)
-
-                            # addons inside variations
-                            if v.get("addon"):
-                                addon = v["addon"][0]
-                                addon_obj = {
-                                    "addon_group_id": addon.get("addon_group_id"),
-                                    "addon_item_selection": addon.get("addon_item_selection"),
-                                    "addon_item_selection_min": addon.get("addon_item_selection_min"),
-                                    "addon_item_selection_max": addon.get("addon_item_selection_max")
-                                }
-                                item_obj.update(addon_obj)
-
-                    # addons at item level
-                    if i.get("addon"):
-                        addon = i["addon"][0]
-                        addon_obj = {
-                            "addon_group_id": addon.get("addon_group_id"),
-                            "addon_item_selection": addon.get("addon_item_selection"),
-                            "addon_item_selection_min": addon.get("addon_item_selection_min"),
-                            "addon_item_selection_max": addon.get("addon_item_selection_max")
-                        }
-                        item_obj.update(addon_obj)
-
-                    cat_obj["items"].append(item_obj)
-
-                categories.append(cat_obj)
-
-            final_json = {
-                "restaurant_name": restaurant_name,
-                "area_id": area_id,
-                "area_name": area_name,
-                "categories": categories
-            }
-
-            # Store in same place as extractImage
-            self.data = json.dumps(final_json, indent=2)
-            return 200
-
-        except Exception as e:
-            print(f"[extract_menu_json] Failed: {e}")
-            self.data = ""
-            return 500
         
-    def flatten_menu(self):
-        if not self.data:
-            print("[flatten_menu] No data to flatten.")
-            return []
+def flatten_menu(json_data):
+    rows = []
 
-        try:
-            json_data = json.loads(self.data)
-        except json.JSONDecodeError:
-            print("[flatten_menu] Invalid JSON data.")
-            return []
+    # restaurant info
+    restaurant_name = json_data["restaurants"][0]["details"]["restaurantname"]
 
-        rows = []
-        restaurant_name = json_data.get("restaurant_name", "")
-        area_id = json_data.get("area_id", "")
-        area_name = json_data.get("area_name", "")
+    # pick first area (or mark Not Present)
+    areas = json_data.get("areas", [])
+    area_id = areas[0]["areaid"] if areas else "Not Present"
+    area_name = areas[0]["displayname"] if areas else "Not Present"
 
-        for category in json_data.get("categories", []):
-            category_id = category.get("id", "")
-            category_name = category.get("name", "")
-            category_image_url = category.get("image_url", "")
-            category_rank = category.get("rank", "")
-            category_availability = category.get("availability", "")
+    # category lookup
+    category_lookup = {c["categoryid"]: c for c in json_data.get("categories", [])}
 
-            if not category.get("items"):
-                continue
+    for item in json_data.get("items", []):
+        cat = category_lookup.get(item.get("item_categoryid"), {})
 
-            for item in category.get("items", []):
-                row = [
-                    restaurant_name,
-                    area_id,
-                    area_name,
-                    category_id,
-                    category_name,
-                    category_image_url,
-                    category_availability,
-                    category_rank,
-                    item.get("id", ""),
-                    item.get("name", ""),
-                    item.get("description", ""),
-                    item.get("price", ""),
-                    item.get("rank", ""),
-                    category_id,
-                    item.get("image_url", ""),
-                    item.get("stock_status", ""),
-                    item.get("variation_item_id", ""),
-                    item.get("variation_id", ""),
-                    item.get("variation_name", ""),
-                    item.get("variation_price", ""),
-                    item.get("addon_name", ""),
-                    item.get("addon_item_selection", ""),
-                    item.get("addon_item_selection_min", ""),
-                    item.get("addon_item_selection_max", ""),
-                    item.get("addon_price", ""),
-                    item.get("addon_id", ""),
-                    item.get("addon_group_id", ""),
-                    item.get("addon_group_name", "")
+        base_row = [
+            restaurant_name,                                # restaurant_name
+            area_id,                                        # area_id
+            area_name,                                      # area_display_name
+            cat.get("categoryid", "Not Present"),           # category_id
+            cat.get("categoryname", "Not Present"),         # category_name
+            cat.get("category_image_url", "Not Present"),   # category_image_url
+            cat.get("categorytimings", "Not Present"),      # category_timings
+            cat.get("categoryrank", "Not Present"),         # category_rank
+            item.get("itemid", "Not Present"),              # item_id
+            item.get("itemname", "Not Present"),            # item_name
+            item.get("itemdescription", "Not Present"),     # item_description
+            item.get("price", "Not Present"),               # price
+            item.get("itemrank", "Not Present"),            # rank
+            cat.get("categoryid", "Not Present"),           # category_id (repeat)
+            item.get("item_image_url", "Not Present"),      # image_url
+            item.get("instock", "Not Present"),             # instock
+        ]
+
+        # === Case 1: No variation ===
+        if not item.get("variation"):
+            if not item.get("addon"):
+                row = base_row + [
+                    "Not Present",  # variation_item_id
+                    "Not Present",  # variation_id
+                    "Not Present",  # variation_name
+                    "Not Present",  # variation_price
+                    "Not Present",  # addon_name
+                    "Not Present",  # addon_item_selection
+                    "Not Present",  # addon_item_selection_min
+                    "Not Present",  # addon_item_selection_max
+                    "Not Present",  # addon_price
+                    "Not Present",  # addon_id
+                    "Not Present",  # addon_group_id
+                    "Not Present",  # addon_group_name
                 ]
                 rows.append(row)
+            else:
+                for addon in item["addon"]:
+                    row = base_row + [
+                        "Not Present",                          # variation_item_id
+                        "Not Present",                          # variation_id
+                        "Not Present",                          # variation_name
+                        "Not Present",                          # variation_price
+                        "Not Present",                          # addon_name (not in JSON)
+                        addon.get("addon_item_selection", "Not Present"),
+                        addon.get("addon_item_selection_min", "Not Present"),
+                        addon.get("addon_item_selection_max", "Not Present"),
+                        "Not Present",                          # addon_price
+                        "Not Present",                          # addon_id
+                        addon.get("addon_group_id", "Not Present"),
+                        "Not Present",                          # addon_group_name
+                    ]
+                    rows.append(row)
 
-        return rows
+        # === Case 2: With variations ===
+        else:
+            for variation in item["variation"]:
+                var_base = base_row + [
+                    variation.get("id", "Not Present"),         # variation_item_id
+                    variation.get("variationid", "Not Present"),# variation_id
+                    variation.get("name", "Not Present"),       # variation_name
+                    variation.get("price", "Not Present"),      # variation_price
+                ]
+
+                if variation.get("addon"):
+                    for addon in variation["addon"]:
+                        row = var_base + [
+                            "Not Present",                          # addon_name
+                            addon.get("addon_item_selection", "Not Present"),
+                            addon.get("addon_item_selection_min", "Not Present"),
+                            addon.get("addon_item_selection_max", "Not Present"),
+                            "Not Present",                          # addon_price
+                            "Not Present",                          # addon_id
+                            addon.get("addon_group_id", "Not Present"),
+                            "Not Present",                          # addon_group_name
+                        ]
+                        rows.append(row)
+                else:
+                    row = var_base + [
+                        "Not Present",  # addon_name
+                        "Not Present",  # addon_item_selection
+                        "Not Present",  # addon_item_selection_min
+                        "Not Present",  # addon_item_selection_max
+                        "Not Present",  # addon_price
+                        "Not Present",  # addon_id
+                        "Not Present",  # addon_group_id
+                        "Not Present",  # addon_group_name
+                    ]
+                    rows.append(row)
+
+
+    return rows
+
+
 
     
-    def append_to_sheets(self,max_retries=3):
-        values = self.flatten_menu()
-        body = {"majorDimension": "ROWS", "values": values}
-        attempt = 0
-        while attempt < max_retries:
+def append_to_sheets(data,max_retries=3):
+    values = flatten_menu(data)
+    body = {"majorDimension": "ROWS", "values": values}
+    attempt = 0
+    while attempt < max_retries:
+        try:
+            result = service.spreadsheets().values().append(
+                spreadsheetId=SPREADSHEET_ID,
+                range=RANGE,
+                valueInputOption=VALUE_INPUT_OPTION,
+                insertDataOption=INSERT_OPTION,
+                body=body
+            ).execute()
+            return 200
+
+        except HttpError as e:
+            status = e.resp.status
             try:
-                result = service.spreadsheets().values().append(
-                    spreadsheetId=SPREADSHEET_ID,
-                    range=RANGE,
-                    valueInputOption=VALUE_INPUT_OPTION,
-                    insertDataOption=INSERT_OPTION,
-                    body=body
-                ).execute()
-                return 200
+                error_content = json.loads(e.content.decode("utf-8"))
+                error_message = error_content.get("error", {}).get("message", "")
+                error_reason = (
+                    error_content.get("error", {})
+                    .get("errors", [{}])[0]
+                    .get("reason", "")
+                )
+            except Exception:
+                error_message = str(e)
+                error_reason = ""
 
-            except HttpError as e:
-                status = e.resp.status
-                try:
-                    error_content = json.loads(e.content.decode("utf-8"))
-                    error_message = error_content.get("error", {}).get("message", "")
-                    error_reason = (
-                        error_content.get("error", {})
-                        .get("errors", [{}])[0]
-                        .get("reason", "")
-                    )
-                except Exception:
-                    error_message = str(e)
-                    error_reason = ""
+            print(f"[Error {status}] {error_message} (reason: {error_reason})")
 
-                print(f"[Error {status}] {error_message} (reason: {error_reason})")
+            if status in (401, 403, 404):
+                # Unrecoverable errors
+                print("Stopping due to unrecoverable error.")
+                return None
 
-                if status in (401, 403, 404):
-                    # Unrecoverable errors
-                    print("Stopping due to unrecoverable error.")
-                    return None
+            elif status in (429, 500, 503):
+                # Retry with exponential backoff
+                retry_after = int(e.resp.get("Retry-After", "5"))
+                wait_time = retry_after * (2 ** attempt)
+                print(f"{status} → waiting {wait_time}s (attempt {attempt+1}/{max_retries})")
+                time.sleep(wait_time)
+                attempt += 1
+                continue
 
-                elif status in (429, 500, 503):
-                    # Retry with exponential backoff
-                    retry_after = int(e.resp.get("Retry-After", "5"))
-                    wait_time = retry_after * (2 ** attempt)
-                    print(f"{status} → waiting {wait_time}s (attempt {attempt+1}/{max_retries})")
-                    time.sleep(wait_time)
-                    attempt += 1
-                    continue
+            else:
+                print(f"Unrecoverable error {status}. Full response: {e.content}")
+                return None
 
-                else:
-                    print(f"Unrecoverable error {status}. Full response: {e.content}")
-                    return None
+    print("Max retries reached, giving up.")
+    return None
 
-        print("Max retries reached, giving up.")
-        return None
+def extract_menu_json(FilePath):
+    try:
+        with open(FilePath, "r", encoding="utf-8") as f:
+            raw_data = json.load(f)
+
+        # Re-shape into the same structure extractImage() would return
+        # so flatten_menu() works without changes
+        return raw_data
+    
+    except Exception as e:
+        print(f"[extract_menu_json] Failed: {e}")
+        return " "
 
 def main():
+    data = extract_menu_json('data\\data_reference.json')
     for i in range(2):
         print(i)
         obj = UploadMenu(f'data\\task_menu_{i+1}.png')
-        if obj.extract_menu_image() == 200:
-            print(f"task_menu_{i+1}.png extracted successfully!")
-        else:
-            print(f"Failed to extract menu. Status code: {status}")
-            break
-        status = obj.append_to_sheets()
-        if status == 200:
-            print(f"task_menu_{i+1}.png appended successfully!")
-        else:
-            print(f"Failed to append menu. Status code: {status}")
-    json_obj = UploadMenu('data\\data_reference.json')
-    if json_obj.extract_menu_json() == 200:
-        print(f"json object extracted successfully!")  # preview first 200 chars
+        for category in data["categories"]:
+            category_name = category['categoryname']
+            category_id = category['categoryid']
+            new_items = obj.extractImage(category_name=category_name,category_id=category_id)
+            if len(new_items) == 0:
+                continue
+            new_items = json.loads(new_items)
+            print(f"Extracted {len(new_items["items"])} in category of {category_name}")
+            if len(new_items["items"]) != 0 :
+                data["items"].extend(new_items["items"])
 
-        status = json_obj.append_to_sheets()
-        if status == 200:
-            print(f"json appended successfully!")
-        else:
-            print(f"Failed to append menu. Status code: {status}")
+    append_status = append_to_sheets(data)
+    if append_status==200:
+        print("Appended Successfully")
+
     else:
-        print(f"Failed to extract menu. Status code: {status}")
+        print("Could not append")
+        
 
 if __name__=="__main__":
     main()
